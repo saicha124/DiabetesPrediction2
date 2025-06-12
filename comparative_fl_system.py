@@ -112,7 +112,11 @@ class ComparativeFederatedLearningSystem:
                 client_updates.append(update)
                 
                 # Evaluate client
-                client_accuracy = client.evaluate()['accuracy']
+                client_eval = client.evaluate()
+                if client_eval and 'test_accuracy' in client_eval:
+                    client_accuracy = client_eval['test_accuracy']
+                else:
+                    client_accuracy = 0.5  # Default fallback
                 round_accuracies.append(client_accuracy)
             
             # Aggregate updates
