@@ -9,6 +9,7 @@ import math
 import json
 import os
 from datetime import datetime, timedelta
+from sklearn.model_selection import train_test_split
 
 # Import custom modules
 from federated_learning import FederatedLearningManager
@@ -25,6 +26,7 @@ from real_medical_data_fetcher import RealMedicalDataFetcher, load_authentic_med
 from training_secret_sharing import TrainingLevelSecretSharingManager, integrate_training_secret_sharing
 from translations import get_translation, translate_risk_level, translate_clinical_advice
 from comparative_fl_system import ComparativeFederatedLearningSystem
+from client_simulator import ClientSimulator
 
 from utils import *
 
@@ -322,6 +324,25 @@ def main():
                     st.session_state.training_config = config
                     st.session_state.training_started = True
                     st.session_state.training_in_progress = True
+                    st.session_state.current_round = 0
+                    st.session_state.training_metrics = []
+                    st.session_state.client_results = []
+                    
+                    # Initialize federated learning manager
+                    fl_manager = FederatedLearningManager(
+                        num_clients=num_clients,
+                        max_rounds=max_rounds,
+                        enable_dp=enable_dp,
+                        epsilon=epsilon or 1.0,
+                        delta=delta or 1e-5,
+                        model_type=internal_model_type,
+                        enable_early_stopping=enable_early_stopping,
+                        patience=patience,
+                        early_stop_metric=early_stop_metric,
+                        min_improvement=min_improvement
+                    )
+                    st.session_state.fl_manager = fl_manager
+                    
                     st.rerun()
             
             with col2:
@@ -545,10 +566,176 @@ def main():
         5. **Export**: Download your results for further analysis
         """)
 
-    # Add the remaining tabs with placeholders for now
     with tab2:
         st.header("📊 " + get_translation("tab_monitoring"))
-        st.info("Training monitoring interface - Configure training in the Training tab first")
+        
+        if not st.session_state.training_started:
+            st.info("Configure training in the Training tab first")
+        else:
+            # Display training progress and real-time monitoring
+            if hasattr(st.session_state, 'fl_manager') and st.session_state.training_in_progress:
+                
+                # Training status section
+                st.subheader("🔄 Training Status")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Current Round", st.session_state.current_round)
+                with col2:
+                    st.metric("Max Rounds", st.session_state.training_config['max_rounds'])
+                with col3:
+                    st.metric("Active Clients", st.session_state.training_config['num_clients'])
+                with col4:
+                    if st.session_state.training_metrics:
+                        latest_accuracy = st.session_state.training_metrics[-1].get('accuracy', 0)
+                        st.metric("Latest Accuracy", f"{latest_accuracy:.3f}")
+                    else:
+                        st.metric("Latest Accuracy", "N/A")
+                
+                # Progress bar
+                progress = st.session_state.current_round / st.session_state.training_config['max_rounds']
+                st.progress(progress)
+                
+                # Execute training step if in progress
+                if st.session_state.training_in_progress and st.session_state.current_round < st.session_state.training_config['max_rounds']:
+                    
+                    # Run one training round
+                    try:
+                        # Get training data
+                        data = st.session_state.data
+                        preprocessor = DataPreprocessor()
+                        
+                        # Prepare data
+                        X = data.drop('Outcome', axis=1).values.astype(np.float32)
+                        y = data['Outcome'].values.astype(np.int32)
+                        
+                        # Split for training
+                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                        
+                        # Create data distribution
+                        distribution_strategy = get_distribution_strategy(
+                            st.session_state.training_config['distribution_strategy'], 
+                            st.session_state.training_config['num_clients'],
+                            **st.session_state.training_config['strategy_params']
+                        )
+                        
+                        client_data = distribution_strategy.distribute_data(X_train, y_train)
+                        
+                        # Initialize clients if not already done
+                        if not hasattr(st.session_state, 'clients'):
+                            clients = []
+                            for i, client_data_dict in enumerate(client_data):
+                                client = ClientSimulator(
+                                    client_id=i,
+                                    data=client_data_dict,
+                                    model_type=st.session_state.training_config['model_type']
+                                )
+                                clients.append(client)
+                            st.session_state.clients = clients
+                        
+                        # Run training round
+                        round_metrics = {}
+                        client_accuracies = []
+                        
+                        # Train each client
+                        for client in st.session_state.clients:
+                            client_result = client.train(local_epochs=1)
+                            client_eval = client.evaluate()
+                            
+                            if client_eval:
+                                client_accuracies.append(client_eval.get('test_accuracy', 0.5))
+                        
+                        # Calculate round metrics
+                        round_metrics = {
+                            'round': st.session_state.current_round + 1,
+                            'accuracy': np.mean(client_accuracies) if client_accuracies else 0.5,
+                            'std_accuracy': np.std(client_accuracies) if client_accuracies else 0.0,
+                            'num_clients': len(st.session_state.clients),
+                            'timestamp': time.time()
+                        }
+                        
+                        # Store metrics
+                        st.session_state.training_metrics.append(round_metrics)
+                        st.session_state.current_round += 1
+                        
+                        # Check early stopping
+                        if st.session_state.training_config['enable_early_stopping']:
+                            current_metric = round_metrics['accuracy']
+                            if not hasattr(st.session_state, 'best_metric') or current_metric > st.session_state.best_metric:
+                                st.session_state.best_metric = current_metric
+                                st.session_state.patience_counter = 0
+                            else:
+                                st.session_state.patience_counter += 1
+                                
+                            if st.session_state.patience_counter >= st.session_state.training_config['patience']:
+                                st.session_state.training_in_progress = False
+                                st.session_state.early_stopped = True
+                                st.success(f"Early stopping triggered at round {st.session_state.current_round}")
+                        
+                        # Check if training complete
+                        if st.session_state.current_round >= st.session_state.training_config['max_rounds']:
+                            st.session_state.training_in_progress = False
+                            st.session_state.training_completed = True
+                            st.success("Training completed!")
+                        
+                        # Auto-refresh for next round
+                        if st.session_state.training_in_progress:
+                            time.sleep(1)  # Brief pause between rounds
+                            st.rerun()
+                            
+                    except Exception as e:
+                        st.error(f"Training error: {str(e)}")
+                        st.session_state.training_in_progress = False
+                
+                # Real-time metrics display
+                if st.session_state.training_metrics:
+                    st.subheader("📈 Training Progress")
+                    
+                    # Create metrics DataFrame
+                    metrics_df = pd.DataFrame(st.session_state.training_metrics)
+                    
+                    # Plot accuracy over rounds
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=metrics_df['round'],
+                        y=metrics_df['accuracy'],
+                        mode='lines+markers',
+                        name='Accuracy',
+                        line=dict(color='blue', width=3)
+                    ))
+                    
+                    fig.update_layout(
+                        title='Training Accuracy Over Rounds',
+                        xaxis_title='Round',
+                        yaxis_title='Accuracy',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display recent metrics table
+                    st.subheader("📋 Recent Training Metrics")
+                    recent_metrics = metrics_df.tail(10)
+                    st.dataframe(recent_metrics, use_container_width=True)
+            
+            elif st.session_state.training_completed:
+                st.success("✅ Training Completed Successfully!")
+                
+                # Display final results
+                if st.session_state.training_metrics:
+                    final_metrics = st.session_state.training_metrics[-1]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Final Accuracy", f"{final_metrics['accuracy']:.3f}")
+                    with col2:
+                        st.metric("Total Rounds", final_metrics['round'])
+                    with col3:
+                        early_stop_text = "Yes" if getattr(st.session_state, 'early_stopped', False) else "No"
+                        st.metric("Early Stopped", early_stop_text)
+            
+            else:
+                st.info("Training configured but not yet started. Click 'Start Federated Training' in the Training tab.")
     
     with tab3:
         st.header("📈 " + get_translation("tab_visualization"))
