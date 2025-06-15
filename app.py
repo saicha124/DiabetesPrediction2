@@ -739,7 +739,208 @@ def main():
     
     with tab3:
         st.header("📈 " + get_translation("tab_visualization"))
-        st.info("Visualization interface - Run training to see results")
+        
+        if not st.session_state.training_started:
+            st.info("Start training in the Training tab to see visualizations")
+        else:
+            if st.session_state.training_metrics:
+                # Create comprehensive visualizations
+                metrics_df = pd.DataFrame(st.session_state.training_metrics)
+                
+                # Training Performance Overview
+                st.subheader("🎯 Training Performance Overview")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    current_accuracy = metrics_df['accuracy'].iloc[-1] if len(metrics_df) > 0 else 0
+                    st.metric("Current Accuracy", f"{current_accuracy:.3f}")
+                
+                with col2:
+                    max_accuracy = metrics_df['accuracy'].max() if len(metrics_df) > 0 else 0
+                    st.metric("Best Accuracy", f"{max_accuracy:.3f}")
+                
+                with col3:
+                    total_rounds = len(metrics_df)
+                    st.metric("Completed Rounds", total_rounds)
+                
+                with col4:
+                    avg_accuracy = metrics_df['accuracy'].mean() if len(metrics_df) > 0 else 0
+                    st.metric("Average Accuracy", f"{avg_accuracy:.3f}")
+                
+                # Accuracy Evolution Chart
+                st.subheader("📊 Accuracy Evolution")
+                
+                fig_accuracy = go.Figure()
+                
+                # Main accuracy line
+                fig_accuracy.add_trace(go.Scatter(
+                    x=metrics_df['round'],
+                    y=metrics_df['accuracy'],
+                    mode='lines+markers',
+                    name='Accuracy',
+                    line=dict(color='#1f77b4', width=3),
+                    marker=dict(size=8)
+                ))
+                
+                # Add confidence bands if available
+                if 'std_accuracy' in metrics_df.columns:
+                    upper_bound = metrics_df['accuracy'] + metrics_df['std_accuracy']
+                    lower_bound = metrics_df['accuracy'] - metrics_df['std_accuracy']
+                    
+                    fig_accuracy.add_trace(go.Scatter(
+                        x=metrics_df['round'],
+                        y=upper_bound,
+                        mode='lines',
+                        line=dict(width=0),
+                        showlegend=False,
+                        hoverinfo='skip'
+                    ))
+                    
+                    fig_accuracy.add_trace(go.Scatter(
+                        x=metrics_df['round'],
+                        y=lower_bound,
+                        mode='lines',
+                        line=dict(width=0),
+                        fill='tonexty',
+                        fillcolor='rgba(31, 119, 180, 0.2)',
+                        name='Confidence Band',
+                        hoverinfo='skip'
+                    ))
+                
+                fig_accuracy.update_layout(
+                    title='Federated Learning Accuracy Over Rounds',
+                    xaxis_title='Training Round',
+                    yaxis_title='Accuracy',
+                    height=400,
+                    hovermode='x unified'
+                )
+                
+                st.plotly_chart(fig_accuracy, use_container_width=True)
+                
+                # Performance Distribution
+                st.subheader("📈 Performance Distribution Analysis")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Accuracy histogram
+                    fig_hist = go.Figure()
+                    fig_hist.add_trace(go.Histogram(
+                        x=metrics_df['accuracy'],
+                        nbinsx=20,
+                        name='Accuracy Distribution',
+                        marker_color='lightblue'
+                    ))
+                    fig_hist.update_layout(
+                        title='Accuracy Distribution',
+                        xaxis_title='Accuracy',
+                        yaxis_title='Frequency',
+                        height=300
+                    )
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                
+                with col2:
+                    # Accuracy variance over time
+                    if 'std_accuracy' in metrics_df.columns:
+                        fig_var = go.Figure()
+                        fig_var.add_trace(go.Scatter(
+                            x=metrics_df['round'],
+                            y=metrics_df['std_accuracy'],
+                            mode='lines+markers',
+                            name='Accuracy Std Dev',
+                            line=dict(color='orange', width=2)
+                        ))
+                        fig_var.update_layout(
+                            title='Client Accuracy Variance',
+                            xaxis_title='Round',
+                            yaxis_title='Standard Deviation',
+                            height=300
+                        )
+                        st.plotly_chart(fig_var, use_container_width=True)
+                
+                # Training Progress Summary
+                st.subheader("📋 Training Progress Summary")
+                
+                # Calculate improvement metrics
+                if len(metrics_df) > 1:
+                    first_accuracy = metrics_df['accuracy'].iloc[0]
+                    last_accuracy = metrics_df['accuracy'].iloc[-1]
+                    total_improvement = last_accuracy - first_accuracy
+                    improvement_percentage = (total_improvement / first_accuracy) * 100 if first_accuracy > 0 else 0
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Total Improvement",
+                            f"{total_improvement:.3f}",
+                            f"{improvement_percentage:.1f}%"
+                        )
+                    
+                    with col2:
+                        # Calculate convergence rate (rounds to reach 90% of max accuracy)
+                        target_accuracy = max_accuracy * 0.9
+                        convergence_round = metrics_df[metrics_df['accuracy'] >= target_accuracy]['round'].min() if target_accuracy > 0 else None
+                        st.metric("Convergence Round", f"{convergence_round}" if convergence_round else "Not reached")
+                    
+                    with col3:
+                        # Training efficiency (accuracy per round)
+                        efficiency = last_accuracy / total_rounds if total_rounds > 0 else 0
+                        st.metric("Training Efficiency", f"{efficiency:.4f}/round")
+                
+                # Detailed metrics table
+                st.subheader("📊 Detailed Training Metrics")
+                
+                # Format the dataframe for display
+                display_df = metrics_df.copy()
+                display_df['accuracy'] = display_df['accuracy'].round(4)
+                if 'std_accuracy' in display_df.columns:
+                    display_df['std_accuracy'] = display_df['std_accuracy'].round(4)
+                
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Download training results
+                st.subheader("💾 Export Training Results")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    csv_data = metrics_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv_data,
+                        file_name=f"training_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                
+                with col2:
+                    json_data = json.dumps(st.session_state.training_metrics, indent=2, default=str)
+                    st.download_button(
+                        label="📥 Download JSON",
+                        data=json_data,
+                        file_name=f"training_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                
+                # Training Configuration Summary
+                if hasattr(st.session_state, 'training_config'):
+                    st.subheader("⚙️ Training Configuration")
+                    
+                    config = st.session_state.training_config
+                    config_df = pd.DataFrame([
+                        ["Number of Clients", config['num_clients']],
+                        ["Max Rounds", config['max_rounds']],
+                        ["Model Type", config['model_type']],
+                        ["Distribution Strategy", config['distribution_strategy']],
+                        ["Differential Privacy", "Enabled" if config['enable_dp'] else "Disabled"],
+                        ["Fog Computing", "Enabled" if config['enable_fog'] else "Disabled"],
+                        ["Early Stopping", "Enabled" if config['enable_early_stopping'] else "Disabled"]
+                    ], columns=["Parameter", "Value"])
+                    
+                    st.dataframe(config_df, use_container_width=True, hide_index=True)
+            
+            else:
+                st.info("Training in progress or not yet started. Results will appear here as training progresses.")
     
     with tab4:
         st.header("📊 " + get_translation("tab_analytics"))
